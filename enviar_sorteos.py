@@ -282,11 +282,20 @@ def main():
             "Hora UTC: %s"
             % datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M")
         )
-        if distancia > 100:
+        if distancia > 60:
+            # No hay ningun sorteo cerca de esta hora: es una corrida manual.
+            # En vez de esperar algo que no va a salir, mando lo que ya salio hoy.
             print(
-                "Aviso: la hora actual queda a %d minutos del sorteo mas cercano."
-                % distancia
+                "No hay sorteo cerca de esta hora (%d min). "
+                "Mando el resumen de lo publicado." % distancia
             )
+            sorteos = parse_tombola(fetch(URL_SORTEOS_HOY))
+            loteria = parse_loteria(fetch(URL_HOME))
+            if not sorteos:
+                raise SystemExit("No hay sorteos publicados todavia.")
+            enviar_telegram(generar_resumen_dia(sorteos, loteria))
+            print("Resumen enviado con %d sorteo(s)." % len(sorteos))
+            return
         minutos = 20
         if "--espera" in args:
             minutos = int(args[args.index("--espera") + 1])
