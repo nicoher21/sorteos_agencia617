@@ -1,0 +1,64 @@
+name: Sorteos a Telegram
+
+on:
+  schedule:
+    - cron: '30 13 * * 1-6'   # La Previa   10:30 Arg
+    - cron: '35 15 * * *'     # Matutina    12:35 Arg
+    - cron: '30 18 * * *'     # Vespertina  15:30 Arg
+    - cron: '0 23 * * 1-6'    # Tardecita   20:00 Arg
+    - cron: '30 1 * * 2-7'    # Nocturna    22:30 Arg
+
+  workflow_dispatch:
+    inputs:
+      sorteo:
+        description: 'Sorteo a enviar'
+        required: true
+        default: 'Matutina'
+        type: choice
+        options:
+          - La Previa
+          - Matutina
+          - Vespertina
+          - Tardecita
+          - Nocturna
+          - RESUMEN DEL DIA
+
+jobs:
+  enviar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Enviar resultados al Telegram
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CRON: ${{ github.event.schedule }}
+          ELEGIDO: ${{ github.event.inputs.sorteo }}
+        run: |
+          if [ -n "$ELEGIDO" ]; then
+            SORTEO="$ELEGIDO"
+          else
+            case "$CRON" in
+              "30 13 * * 1-6") SORTEO="La Previa" ;;
+              "35 15 * * *")   SORTEO="Matutina" ;;
+              "30 18 * * *")   SORTEO="Vespertina" ;;
+              "0 23 * * 1-6")  SORTEO="Tardecita" ;;
+              "30 1 * * 2-7")  SORTEO="Nocturna" ;;
+              *) echo "Cron no reconocido: $CRON"; exit 1 ;;
+            esac
+          fi
+
+          echo "Sorteo a enviar: $SORTEO"
+
+          if [ "$SORTEO" = "RESUMEN DEL DIA" ]; then
+            python enviar_sorteos.py --resumen
+          else
+            python enviar_sorteos.py --solo "$SORTEO" --espera 25
+          fi
