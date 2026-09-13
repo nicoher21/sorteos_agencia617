@@ -6,17 +6,9 @@ on:
     - cron: '36 15 * * *'
     - cron: '31 18 * * *'
     - cron: '1 23 * * 1-6'
-    - cron: '31 1 * * 0,2-6'
+    - cron: '31 1 * * 2-6'
+    - cron: '31 1 * * 0'
   workflow_dispatch:
-    inputs:
-      modo:
-        description: 'resumen = manda lo que ya salio hoy'
-        required: true
-        default: 'resumen'
-        type: choice
-        options:
-          - resumen
-          - auto
 
 jobs:
   enviar:
@@ -30,4 +22,4 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python enviar_sorteos.py --${{ inputs.modo || 'auto' }} --espera 25
+        run: python enviar_sorteos.py --auto --espera 25
