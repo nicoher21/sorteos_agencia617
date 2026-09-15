@@ -630,5 +630,3 @@ jobs:
           git add .estado.json || true
           git commit -m "estado sorteos" || true
           git push || true
-Verificación
-Pestaña Actions → Sorteos a Telegram → Run 
