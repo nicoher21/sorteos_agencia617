@@ -2,32 +2,28 @@ name: Sorteos a Telegram
 
 on:
   schedule:
-    # Previa 10:31 Arg - principal
-    - cron: '31 13 * * 1-6'
-    # Matutina 12:36 Arg - principal
-    - cron: '36 15 * * *'
-    # Vespertina 15:31 Arg - principal
-    - cron: '31 18 * * *'
-    # Tardecita 20:01 Arg - principal
-    - cron: '1 23 * * 1-6'
-    # Nocturna 22:31 Arg - principal (lun a vie)
-    - cron: '31 1 * * 2-6'
-    # Nocturna 22:31 Arg - principal (sabado)
-    - cron: '31 1 * * 0'
-    # Previa 11:10 Arg - refuerzo
-    - cron: '10 14 * * 1-6'
-    # Matutina 13:10 Arg - refuerzo
-    - cron: '10 16 * * *'
-    # Vespertina 16:10 Arg - refuerzo
-    - cron: '10 19 * * *'
-    # Tardecita 20:40 Arg - refuerzo
-    - cron: '40 23 * * 1-6'
-    # Nocturna 23:10 Arg - refuerzo (lun a vie)
-    - cron: '10 2 * * 2-6'
-    # Nocturna 23:10 Arg - refuerzo (sabado)
-    - cron: '10 2 * * 0'
-    # Cierre 23:45 Arg - manda lo que falte del dia
-    - cron: '45 2 * * *'
+    # 10:35 Arg - La Previa
+    - cron: '35 13 * * 1-6'
+    # 12:40 Arg - Matutina
+    - cron: '40 15 * * *'
+    # 15:35 Arg - Vespertina
+    - cron: '35 18 * * *'
+    # 17:05 Arg - barrido: manda lo que falte
+    - cron: '5 20 * * *'
+    # 18:50 Arg - barrido: manda lo que falte
+    - cron: '50 21 * * *'
+    # 20:05 Arg - Tardecita
+    - cron: '5 23 * * 1-6'
+    # 21:30 Arg - barrido: manda lo que falte
+    - cron: '30 0 * * *'
+    # 22:35 Arg - Nocturna (lunes a viernes)
+    - cron: '35 1 * * 2-6'
+    # 22:35 Arg - Nocturna (sabado)
+    - cron: '35 1 * * 0'
+    # 23:20 Arg - Nocturna, reintento
+    - cron: '20 2 * * *'
+    # 23:50 Arg - cierre del dia
+    - cron: '50 2 * * *'
   workflow_dispatch:
 
 permissions:
@@ -137,9 +133,18 @@ jobs:
           # Argentina es UTC-3 fijo (no cambia con el horario de verano).
           TZ_ARG = datetime.timezone(datetime.timedelta(hours=-3))
 
-          # Minutos de espera segun el tipo de corrida.
-          ESPERA_PRINCIPAL = 25
-          ESPERA_REFUERZO = 50
+          # Minutos que espera una corrida a que se publique el sorteo que espera.
+          ESPERA = 25
+
+          # Hora aproximada de cada sorteo (minutos desde la medianoche, hora Argentina).
+          # Solo se usa para avisar si un sorteo del dia no se llego a mandar.
+          HORA_SORTEO_ARG = {
+              "La Previa": 10 * 60 + 30,
+              "Matutina": 12 * 60 + 35,
+              "Vespertina": 15 * 60 + 30,
+              "Tardecita": 20 * 60,
+              "Nocturna": 22 * 60 + 30,
+          }
 
           ESTADO_PATH = os.path.join(
               os.path.dirname(os.path.abspath(__file__)), ".estado.json"
@@ -449,7 +454,6 @@ jobs:
                   return
 
               if "--auto" in args:
-                  hoy = fecha_arg()
                   ahora = ahora_arg()
                   nombre, distancia = sorteo_por_reloj()
                   print("Hora Argentina: %s" % ahora.strftime("%d/%m/%Y %H:%M"))
@@ -457,52 +461,30 @@ jobs:
 
                   manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
 
-                  # Si es domingo y el sorteo no se juega, mando el resumen del dia.
-                  if ahora.weekday() == 6 and nombre in NO_HAY_DOMINGO:
-                      print("Domingo: '%s' no se juega. Mando el resumen." % nombre)
-                      return enviar_resumen()
-
                   # Si lo corrimos a mano, mando el resumen de lo que ya salio hoy.
                   if manual and distancia > 25:
                       print("Corrida manual: mando el resumen de lo publicado hoy.")
                       return enviar_resumen()
 
-                  # Muy lejos de cualquier sorteo: mando el resumen.
-                  if distancia > 120:
-                      print(
-                          "No hay sorteo cerca de esta hora (%d min). "
-                          "Mando el resumen de lo publicado." % distancia
-                      )
-                      return enviar_resumen()
-
-                  # Corrida de cierre (23:45 Arg): mando lo que haya quedado pendiente.
+                  # GitHub a veces atrasa las corridas programadas (hasta horas) o directamente
+                  # las saltea. Por eso NUNCA confiamos en el reloj para decidir que mandar:
+                  # cada corrida manda TODO lo que falte del dia. El reloj solo dice cuantos
+                  # minutos vale la pena esperar a que se publique algo nuevo.
                   if distancia > 60:
-                      print(
-                          "Corrida de cierre (%d min del horario): "
-                          "reviso si falto algun sorteo del dia." % distancia
-                      )
-                      return enviar_pendientes()
-
-                  # Cerca del horario = corrida principal. Mas lejos = corrida de refuerzo.
-                  refuerzo = distancia > 25
-                  minutos = ESPERA_REFUERZO if refuerzo else ESPERA_PRINCIPAL
+                      minutos = 0  # corrida de barrido: manda lo que haya sin esperar
+                  else:
+                      minutos = ESPERA
                   if "--espera" in args:
                       minutos = int(args[args.index("--espera") + 1])
-                  print(
-                      "Tipo de corrida: %s (espera hasta %d min)"
-                      % ("REFUERZO" if refuerzo else "PRINCIPAL", minutos)
-                  )
 
-                  if ya_enviado(hoy, nombre):
-                      print("'%s' del %s ya se envio antes. No hago nada." % (nombre, hoy))
-                      return
+                  # Domingo y el sorteo no se juega: no tiene sentido esperarlo.
+                  if ahora.weekday() == 6 and nombre in NO_HAY_DOMINGO:
+                      print("Domingo: '%s' no se juega. No espero." % nombre)
+                      minutos = 0
 
-                  s = esperar_sorteo(nombre, hoy, minutos, estricto=refuerzo)
-                  if not s:
-                      return
-                  enviar_telegram(generar_post_sorteo(s))
-                  marcar_enviado(hoy, s["nombre"])
-                  print("Enviado: %s del %s" % (s["nombre"], s["fecha"]))
+                  print("Espera de hasta %d min antes de mandar." % minutos)
+                  sorteos = esperar_y_enviar(nombre, minutos)
+                  avisar_faltantes(sorteos)
                   return
 
               if "--pendientes" in args:
@@ -550,27 +532,90 @@ jobs:
               print("Resumen enviado con %d sorteo(s)." % len(sorteos))
 
 
-          def enviar_pendientes():
-              """Manda los sorteos de hoy que todavia no se enviaron (corrida de cierre)."""
-              hoy = fecha_arg()
+          def traer_sorteos():
+              """Devuelve los sorteos publicados hoy (o lista vacia si algo falla)."""
               try:
-                  sorteos = parse_tombola(fetch(URL_SORTEOS_HOY))
+                  return parse_tombola(fetch(URL_SORTEOS_HOY))
               except Exception as e:
                   print("No pude leer la pagina: %s" % e)
-                  return
+                  return []
+
+
+          def enviar_pendientes():
+              """Manda los sorteos de hoy que todavia no se enviaron. Devuelve lo publicado."""
+              hoy = fecha_arg()
+              sorteos = traer_sorteos()
               if not sorteos:
                   print("Todavia no hay sorteos publicados.")
-                  return
+                  return sorteos
               enviados = cargar_estado().get(hoy, [])
-              faltan = [s for s in sorteos if s["nombre"] not in enviados]
+              # Solo sorteos con la fecha de hoy: si la pagina quedo desactualizada,
+              # mejor no mandar nada antes que mandar un resultado del dia anterior.
+              faltan = [s for s in sorteos if s["fecha"] == hoy and s["nombre"] not in enviados]
               if not faltan:
                   print("No falta ningun sorteo del %s. Listo." % hoy)
-                  return
+                  return sorteos
               print("Faltan %d: %s" % (len(faltan), ", ".join(s["nombre"] for s in faltan)))
               for s in faltan:
                   enviar_telegram(generar_post_sorteo(s))
                   marcar_enviado(hoy, s["nombre"])
                   print("Enviado: %s del %s" % (s["nombre"], s["fecha"]))
+              return sorteos
+
+
+          def esperar_y_enviar(nombre, minutos):
+              """Espera a que aparezca algo nuevo y manda todo lo que falte del dia.
+
+              La espera termina en cuanto: aparece un sorteo sin enviar, el sorteo que
+              tocaba ya se envio, o se acaban los minutos.
+              """
+              hoy = fecha_arg()
+              limite = time.time() + minutos * 60
+              intento = 0
+              while True:
+                  intento += 1
+                  sorteos = traer_sorteos()
+                  enviados = cargar_estado().get(hoy, [])
+                  if nombre and nombre in enviados:
+                      print("'%s' ya se envio hoy. No sigo esperando." % nombre)
+                      break
+                  if any(s["nombre"] not in enviados for s in sorteos):
+                      print("Hay sorteos nuevos sin enviar. Mando.")
+                      break
+                  if time.time() >= limite:
+                      print("Se acabo la espera de %d minutos." % minutos)
+                      break
+                  print(
+                      "Intento %d: esperando que se publique '%s' (60s)..." % (intento, nombre)
+                  )
+                  time.sleep(60)
+              return enviar_pendientes()
+
+
+          def avisar_faltantes(sorteos):
+              """A la noche avisa si hubo sorteos del dia que no se pudieron mandar."""
+              if not sorteos:
+                  return
+              ahora = ahora_arg()
+              minuto = ahora.hour * 60 + ahora.minute
+              if minuto < 23 * 60:  # solo avisa despues de las 23 hs
+                  return
+              publicados = set(s["nombre"] for s in sorteos)
+              enviados = set(cargar_estado().get(fecha_arg(), []))
+              esperados = ["Matutina", "Vespertina"] if ahora.weekday() == 6 else ORDEN
+              faltan = []
+              for n in esperados:
+                  if n in publicados or n in enviados:
+                      continue
+                  if minuto > HORA_SORTEO_ARG.get(n, 0) + 90:
+                      faltan.append(n)
+              if not faltan:
+                  return
+              enviar_telegram(
+                  "\u26a0\ufe0f Aviso: hoy no se pudieron enviar estos sorteos: %s.\n"
+                  "Puede que la pagina no los haya publicado." % ", ".join(faltan)
+              )
+              print("Aviso enviado por: %s" % ", ".join(faltan))
 
 
           if __name__ == "__main__":
@@ -585,3 +630,5 @@ jobs:
           git add .estado.json || true
           git commit -m "estado sorteos" || true
           git push || true
+Verificación
+Pestaña Actions → Sorteos a Telegram → Run 
