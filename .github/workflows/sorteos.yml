@@ -2,20 +2,32 @@ name: Sorteos a Telegram
 
 on:
   schedule:
-    # Corridas principales: apenas pasa el horario de cada sorteo.
+    # Previa 10:31 Arg - principal
     - cron: '31 13 * * 1-6'
+    # Matutina 12:36 Arg - principal
     - cron: '36 15 * * *'
+    # Vespertina 15:31 Arg - principal
     - cron: '31 18 * * *'
+    # Tardecita 20:01 Arg - principal
     - cron: '1 23 * * 1-6'
+    # Nocturna 22:31 Arg - principal (lun a vie)
     - cron: '31 1 * * 2-6'
+    # Nocturna 22:31 Arg - principal (sabado)
     - cron: '31 1 * * 0'
-    # Corridas de refuerzo: unos 40 minutos despues, por si el sitio se atrasa.
+    # Previa 11:10 Arg - refuerzo
     - cron: '10 14 * * 1-6'
+    # Matutina 13:10 Arg - refuerzo
     - cron: '10 16 * * *'
+    # Vespertina 16:10 Arg - refuerzo
     - cron: '10 19 * * *'
+    # Tardecita 20:40 Arg - refuerzo
     - cron: '40 23 * * 1-6'
+    # Nocturna 23:10 Arg - refuerzo (lun a vie)
     - cron: '10 2 * * 2-6'
+    # Nocturna 23:10 Arg - refuerzo (sabado)
     - cron: '10 2 * * 0'
+    # Cierre 23:45 Arg - manda lo que falte del dia
+    - cron: '45 2 * * *'
   workflow_dispatch:
 
 permissions:
@@ -33,7 +45,538 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python enviar_sorteos.py --auto
+        run: |
+          echo '=== BOT V3 (autocontenido) ==='
+          cat > bot.py <<'PYEOF'
+          # -*- coding: utf-8 -*-
+          """
+          Envia los resultados de los sorteos de Caja Social de Santiago del Estero
+          directo a Telegram. Pensado para correr en GitHub Actions: no depende de
+          ninguna computadora prendida.
+
+          Uso:
+              python enviar_sorteos.py --auto
+              python enviar_sorteos.py --solo "Matutina"
+              python enviar_sorteos.py --resumen
+              python enviar_sorteos.py --probar
+
+          Variables de entorno (se cargan como Secrets en GitHub):
+              TELEGRAM_TOKEN     token del bot
+              TELEGRAM_CHAT_ID   chat id de destino
+
+          Como funciona --auto (lo que usa GitHub Actions):
+          - Cada sorteo tiene DOS corridas programadas: una "principal" (apenas pasa el
+            horario del sorteo) y una de "refuerzo" 40 minutos despues.
+          - La principal espera hasta 25 minutos a que el sitio publique. Si no aparece,
+            termina SIN error: ya lo va a intentar el refuerzo.
+          - El refuerzo espera hasta 50 minutos mas y, si tampoco aparece, ahi si falla
+            (para que GitHub avise por correo).
+          - A las 23:45 hay una corrida de "cierre" que manda cualquier sorteo del dia que
+            todavia no se haya enviado, por si las dos anteriores fallaron.
+          - Ninguna manda dos veces lo mismo: queda registrado en .estado.json.
+          - Ademas solo acepta resultados con la fecha de HOY, asi nunca se manda por
+            error un sorteo del dia anterior.
+
+          No usa librerias externas: solo la biblioteca estandar de Python.
+          """
+
+          import datetime
+          import json
+          import os
+          import re
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          BASE = "http://www.cajasocialsde.gob.ar"
+          URL_SORTEOS_HOY = BASE + "/php/sorteosHoy.php"
+          URL_HOME = BASE + "/"
+
+          NOMBRES_SORTEO = {
+              "PV": "La Previa",
+              "M": "Matutina",
+              "V": "Vespertina",
+              "E": "Tardecita",
+              "N": "Nocturna",
+              "DM": "Matutina",
+              "DV": "Vespertina",
+          }
+
+          # Sorteos que NO se juegan los domingos.
+          NO_HAY_DOMINGO = ["La Previa", "Tardecita", "Nocturna"]
+
+          ORDEN = ["La Previa", "Matutina", "Vespertina", "Tardecita", "Nocturna"]
+
+          EMOJI = {
+              "La Previa": "\U0001F305",
+              "Matutina": "\U0001F31E",
+              "Vespertina": "\U0001F307",
+              "Tardecita": "\U0001F306",
+              "Nocturna": "\U0001F319",
+          }
+
+          CIERRE = (
+              "\u00bfSaliste premiado? Pasate por Agencia 617 y cobr\u00e1 tu premio al instante.\n"
+              "\n\u00bfNo pod\u00e9s llegar? \u00a1No importa! Pasanos tu alias y te transferimos tu premio.\n"
+              "\n\u00bfQuer\u00e9s jugar? Mandanos tus jugadas al WhatsApp 3854780044 "
+              "y pag\u00e1s con transferencia.\n"
+              "\n\u00bfNo sab\u00e9s qu\u00e9 n\u00fameros jugar? Escribinos y te pasamos los atrasados "
+              "y los peligrosos."
+          )
+
+          CIERRE_CORTO = (
+              "\u00bfSaliste premiado? Pasate por Agencia 617 y cobr\u00e1 al instante.\n"
+              "\u00bfNo pod\u00e9s llegar? Pasanos tu alias y te transferimos.\n"
+              "Jugadas por WhatsApp 3854780044"
+          )
+
+          HASHTAGS = "#quiniela #t\u00f3mbola #resultados #santiagodelestero #agencia617"
+
+          # Argentina es UTC-3 fijo (no cambia con el horario de verano).
+          TZ_ARG = datetime.timezone(datetime.timedelta(hours=-3))
+
+          # Minutos de espera segun el tipo de corrida.
+          ESPERA_PRINCIPAL = 25
+          ESPERA_REFUERZO = 50
+
+          ESTADO_PATH = os.path.join(
+              os.path.dirname(os.path.abspath(__file__)), ".estado.json"
+          )
+
+
+          def fetch(url):
+              req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  return resp.read().decode("utf-8", errors="replace")
+
+
+          def parse_tombola(html):
+              sorteos = []
+              bloques = re.findall(
+                  r"<div class=['\"]card-sorteo['\"].*?</table>", html, re.DOTALL
+              )
+              for bloque in bloques:
+                  m_tipo = re.search(r"var tipoext\s*=\s*'([A-Z]+)'", bloque)
+                  m_fecha = re.search(r"<li>\s*(\d{2}/\d{2}/\d{4})", bloque)
+                  m_contenido = re.search(
+                      r"contenido-extracto['\"]>(.*?)</div>", bloque, re.DOTALL
+                  )
+                  cabeza = ""
+                  if m_contenido:
+                      lis = re.findall(r"<li>(.*?)</li>", m_contenido.group(1), re.DOTALL)
+                      lis = [re.sub(r"<[^>]+>", "", x).strip() for x in lis]
+                      if len(lis) >= 2:
+                          cabeza = lis[1]
+                  numeros = [
+                      n.strip()
+                      for n in re.findall(r"<span[^>]*>\s*([0-9]{3,5})\s*</span>", bloque)
+                  ]
+                  if not numeros:
+                      continue
+                  tipo = m_tipo.group(1) if m_tipo else ""
+                  sorteos.append(
+                      {
+                          "tipo": tipo,
+                          "nombre": NOMBRES_SORTEO.get(tipo, tipo or "Sorteo"),
+                          "fecha": m_fecha.group(1) if m_fecha else "",
+                          "cabeza": cabeza,
+                          "numeros": numeros,
+                      }
+                  )
+              sorteos.sort(
+                  key=lambda s: ORDEN.index(s["nombre"]) if s["nombre"] in ORDEN else 99
+              )
+              return sorteos
+
+
+          def parse_loteria(html):
+              m_fecha = re.search(r"extractosFecha['\"]>(\d{2}/\d{2}/\d{4})", html)
+              m_cabeza = re.search(r"cabeceral['\"]>\s*([0-9]+)", html)
+              if not m_fecha:
+                  return None
+              columnas = ["primeraColumna", "segundaColumna", "terceraColumna", "cuartaColumna"]
+              filas = ["primeraFila", "segundaFila", "terceraFila", "cuartaFila", "ultimaFila"]
+              numeros = []
+              for fila in filas:
+                  for col in columnas:
+                      patron = r"class\s*=\s*['\"][^'\"]*%s[^'\"]*%s[^'\"]*['\"]>\s*([0-9]{5})" % (
+                          col,
+                          fila,
+                      )
+                      m = re.search(patron, html)
+                      numeros.append(m.group(1) if m else "")
+              return {
+                  "fecha": m_fecha.group(1),
+                  "cabeza": m_cabeza.group(1) if m_cabeza else "",
+                  "numeros": numeros,
+              }
+
+
+          def numeros_en_linea(numeros, por_linea=4):
+              partes = []
+              linea = []
+              for i, n in enumerate(numeros[:20], start=1):
+                  linea.append("%d\u00b0 %s" % (i, n))
+                  if len(linea) == por_linea:
+                      partes.append(" | ".join(linea))
+                      linea = []
+              if linea:
+                  partes.append(" | ".join(linea))
+              return "\n".join(partes)
+
+
+          def generar_post_sorteo(s):
+              em = EMOJI.get(s["nombre"], "\U0001F3AF")
+              lineas = [
+                  "%s RESULTADOS %s" % (em, s["nombre"].upper()),
+                  "\U0001F4C5 %s" % s["fecha"],
+                  "",
+                  "\U0001F3B0 T\u00d3MBOLA",
+              ]
+              if s["cabeza"]:
+                  lineas.append("Cabeza / lote: %s" % s["cabeza"])
+              lineas.append("")
+              lineas.append(numeros_en_linea(s["numeros"], 4))
+              lineas.append("")
+              lineas.append(CIERRE)
+              lineas.append("")
+              lineas.append(HASHTAGS)
+              return "\n".join(lineas)
+
+
+          def generar_resumen_dia(sorteos, loteria):
+              titulo = sorteos[0]["fecha"] if sorteos else ""
+              lineas = ["\U0001F3AF RESULTADOS DEL D\u00cdA - %s" % titulo, ""]
+              for s in sorteos:
+                  em = EMOJI.get(s["nombre"], "\U0001F3AF")
+                  lineas.append("%s %s (%s)" % (em, s["nombre"].upper(), s["fecha"]))
+                  if s["cabeza"]:
+                      lineas.append("Cabeza / lote: %s" % s["cabeza"])
+                  lineas.append(numeros_en_linea(s["numeros"], 4))
+                  lineas.append("")
+              if loteria:
+                  lineas.append("\U0001F3AB LOTER\u00cdA SANTIAGUE\u00d1A (%s)" % loteria["fecha"])
+                  lineas.append("Cabeza: %s" % loteria["cabeza"])
+                  lineas.append(numeros_en_linea(loteria["numeros"], 4))
+                  lineas.append("")
+              lineas.append(CIERRE_CORTO)
+              lineas.append("")
+              lineas.append(HASHTAGS)
+              return "\n".join(lineas)
+
+
+          def mostrar_config():
+              """Imprime en el registro si las claves llegaron (sin mostrar el valor)."""
+              token = (os.environ.get("TELEGRAM_TOKEN") or "").strip()
+              chat_id = (os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
+              print(
+                  "Config -> TELEGRAM_TOKEN: %s | TELEGRAM_CHAT_ID: %s | evento: %s"
+                  % (
+                      "cargado (%d caracteres)" % len(token) if token else "FALTA",
+                      "'%s'" % chat_id if chat_id else "FALTA",
+                      os.environ.get("GITHUB_EVENT_NAME") or "(corrida local)",
+                  )
+              )
+
+
+          def enviar_telegram(texto):
+              token = (os.environ.get("TELEGRAM_TOKEN") or "").strip()
+              chat_id = (os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
+              if not token or not chat_id:
+                  raise SystemExit(
+                      "Faltan TELEGRAM_TOKEN o TELEGRAM_CHAT_ID. "
+                      "Cargalos como Secrets en el repositorio."
+                  )
+              url = "https://api.telegram.org/bot%s/sendMessage" % token
+              data = urllib.parse.urlencode({"chat_id": chat_id, "text": texto}).encode("utf-8")
+              req = urllib.request.Request(url, data=data, headers={"User-Agent": "Mozilla/5.0"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      r = resp.read().decode("utf-8")
+              except urllib.error.HTTPError as e:
+                  cuerpo = ""
+                  try:
+                      cuerpo = e.read().decode("utf-8", "replace")
+                  except Exception:
+                      pass
+                  raise SystemExit(
+                      "Telegram devolvio el error %s. Revisa el token y el chat id en los "
+                      "Secrets del repositorio. Respuesta de Telegram: %s"
+                      % (e.code, cuerpo[:300])
+                  )
+              except Exception as e:
+                  raise SystemExit("No pude conectar con Telegram: %s" % e)
+              if '"ok":false' in r.replace(" ", ""):
+                  raise SystemExit("Telegram rechazo el mensaje: %s" % r)
+              return True
+
+
+          # ---------------------------------------------------------------- estado ----
+          # Guarda que sorteos ya se mandaron, para no repetir entre la corrida
+          # principal y la de refuerzo.
+
+
+          def cargar_estado():
+              try:
+                  with open(ESTADO_PATH, "r", encoding="utf-8") as f:
+                      datos = json.load(f)
+                  if isinstance(datos, dict):
+                      return datos
+              except Exception:
+                  pass
+              return {}
+
+
+          def guardar_estado(estado):
+              # Se quedan solo los ultimos 10 dias para que el archivo no crezca.
+              for fecha in sorted(estado)[:-10]:
+                  estado.pop(fecha, None)
+              try:
+                  with open(ESTADO_PATH, "w", encoding="utf-8") as f:
+                      json.dump(estado, f, ensure_ascii=False, indent=1)
+              except Exception as e:
+                  print("Aviso: no pude guardar el estado (%s)" % e)
+
+
+          def ya_enviado(fecha, nombre):
+              return nombre in cargar_estado().get(fecha, [])
+
+
+          def marcar_enviado(fecha, nombre):
+              estado = cargar_estado()
+              estado.setdefault(fecha, [])
+              if nombre not in estado[fecha]:
+                  estado[fecha].append(nombre)
+              guardar_estado(estado)
+
+
+          # ------------------------------------------------------------ fecha y hora --
+
+
+          def ahora_arg():
+              return datetime.datetime.now(datetime.timezone.utc).astimezone(TZ_ARG)
+
+
+          def fecha_arg():
+              return ahora_arg().strftime("%d/%m/%Y")
+
+
+          def elegir(sorteos, nombre, fecha):
+              """Devuelve el sorteo que coincida en nombre Y en fecha."""
+              for s in sorteos:
+                  if s["nombre"].lower() == nombre.lower() and s["fecha"] == fecha:
+                      return s
+              return None
+
+
+          # Horarios de cada sorteo en minutos UTC desde la medianoche.
+          #   01:30 UTC = 22:30 Arg (Nocturna) | 13:30 = 10:30 (Previa)
+          #   15:35 = 12:35 (Matutina) | 18:30 = 15:30 (Vespertina) | 23:00 = 20:00 (Tardecita)
+          SLOTS_UTC = [
+              (90, "Nocturna"),
+              (810, "La Previa"),
+              (935, "Matutina"),
+              (1110, "Vespertina"),
+              (1380, "Tardecita"),
+          ]
+
+
+          def sorteo_por_reloj():
+              """Deduce que sorteo corresponde segun la hora UTC actual."""
+              ahora = datetime.datetime.now(datetime.timezone.utc)
+              minuto = ahora.hour * 60 + ahora.minute
+              mejor = None
+              for slot, nombre in SLOTS_UTC:
+                  distancia = abs(minuto - slot)
+                  distancia = min(distancia, 1440 - distancia)
+                  if mejor is None or distancia < mejor[0]:
+                      mejor = (distancia, nombre)
+              return mejor[1], mejor[0]
+
+
+          def esperar_sorteo(nombre, fecha, minutos, estricto=True):
+              """Consulta la pagina hasta que aparezca el sorteo pedido con la fecha de hoy."""
+              limite = int(time.time()) + minutos * 60
+              intento = 0
+              while True:
+                  intento += 1
+                  sorteos = []
+                  try:
+                      sorteos = parse_tombola(fetch(URL_SORTEOS_HOY))
+                  except Exception as e:
+                      print("Intento %d: no pude leer la pagina (%s)" % (intento, e))
+                  s = elegir(sorteos, nombre, fecha)
+                  if s:
+                      print("Encontrado: %s (%s)" % (s["nombre"], s["fecha"]))
+                      return s
+                  if time.time() >= limite:
+                      disponibles = (
+                          ", ".join("%s %s" % (x["nombre"], x["fecha"]) for x in sorteos)
+                          or "(ninguno)"
+                      )
+                      mensaje = (
+                          "El sorteo '%s' con fecha %s no aparecio despues de %d minutos. "
+                          "Sorteos publicados: %s" % (nombre, fecha, minutos, disponibles)
+                      )
+                      if estricto:
+                          raise SystemExit(mensaje)
+                      print(mensaje)
+                      print("No marco error: ya lo intenta la corrida de refuerzo.")
+                      return None
+                  print(
+                      "Intento %d: todavia no esta '%s' del %s. Espero 60s..."
+                      % (intento, nombre, fecha)
+                  )
+                  time.sleep(60)
+
+
+          def main():
+              args = sys.argv[1:]
+              mostrar_config()
+
+              if "--probar" in args:
+                  enviar_telegram(
+                      "\u2705 Bot de sorteos funcionando desde la nube.\n"
+                      "De aca en mas te llegan los resultados sin depender de ninguna PC."
+                  )
+                  print("Mensaje de prueba enviado.")
+                  return
+
+              if "--resumen" in args:
+                  enviar_resumen()
+                  return
+
+              if "--auto" in args:
+                  hoy = fecha_arg()
+                  ahora = ahora_arg()
+                  nombre, distancia = sorteo_por_reloj()
+                  print("Hora Argentina: %s" % ahora.strftime("%d/%m/%Y %H:%M"))
+                  print("Sorteo segun el reloj: %s (a %d min del horario)" % (nombre, distancia))
+
+                  manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+
+                  # Si es domingo y el sorteo no se juega, mando el resumen del dia.
+                  if ahora.weekday() == 6 and nombre in NO_HAY_DOMINGO:
+                      print("Domingo: '%s' no se juega. Mando el resumen." % nombre)
+                      return enviar_resumen()
+
+                  # Si lo corrimos a mano, mando el resumen de lo que ya salio hoy.
+                  if manual and distancia > 25:
+                      print("Corrida manual: mando el resumen de lo publicado hoy.")
+                      return enviar_resumen()
+
+                  # Muy lejos de cualquier sorteo: mando el resumen.
+                  if distancia > 120:
+                      print(
+                          "No hay sorteo cerca de esta hora (%d min). "
+                          "Mando el resumen de lo publicado." % distancia
+                      )
+                      return enviar_resumen()
+
+                  # Corrida de cierre (23:45 Arg): mando lo que haya quedado pendiente.
+                  if distancia > 60:
+                      print(
+                          "Corrida de cierre (%d min del horario): "
+                          "reviso si falto algun sorteo del dia." % distancia
+                      )
+                      return enviar_pendientes()
+
+                  # Cerca del horario = corrida principal. Mas lejos = corrida de refuerzo.
+                  refuerzo = distancia > 25
+                  minutos = ESPERA_REFUERZO if refuerzo else ESPERA_PRINCIPAL
+                  if "--espera" in args:
+                      minutos = int(args[args.index("--espera") + 1])
+                  print(
+                      "Tipo de corrida: %s (espera hasta %d min)"
+                      % ("REFUERZO" if refuerzo else "PRINCIPAL", minutos)
+                  )
+
+                  if ya_enviado(hoy, nombre):
+                      print("'%s' del %s ya se envio antes. No hago nada." % (nombre, hoy))
+                      return
+
+                  s = esperar_sorteo(nombre, hoy, minutos, estricto=refuerzo)
+                  if not s:
+                      return
+                  enviar_telegram(generar_post_sorteo(s))
+                  marcar_enviado(hoy, s["nombre"])
+                  print("Enviado: %s del %s" % (s["nombre"], s["fecha"]))
+                  return
+
+              if "--pendientes" in args:
+                  enviar_pendientes()
+                  return
+
+              if "--solo" in args:
+                  nombre = args[args.index("--solo") + 1]
+                  minutos = 10
+                  if "--espera" in args:
+                      minutos = int(args[args.index("--espera") + 1])
+                  fecha = args[args.index("--solo") + 2] if len(args) > args.index("--solo") + 2 else fecha_arg()
+                  if "--forzar" not in args and ya_enviado(fecha, nombre):
+                      print("'%s' del %s ya se envio antes. Usa --forzar para repetirlo." % (nombre, fecha))
+                      return
+                  s = esperar_sorteo(nombre, fecha, minutos, estricto=True)
+                  if not s:
+                      return
+                  enviar_telegram(generar_post_sorteo(s))
+                  marcar_enviado(fecha, s["nombre"])
+                  print("Enviado: %s del %s" % (s["nombre"], s["fecha"]))
+                  return
+
+              print(__doc__)
+
+
+          def enviar_resumen():
+              sorteos = parse_tombola(fetch(URL_SORTEOS_HOY))
+              if not sorteos:
+                  # No es un error: simplemente todavia no publicaron nada hoy (por ejemplo
+                  # si corriste el bot a mano de madrugada). Aviso por Telegram y listo.
+                  aviso = (
+                      "\u23f0 Todav\u00eda no hay sorteos publicados para hoy (%s).\n"
+                      "En cuanto salga el primero te lo mando ac\u00e1 mismo." % fecha_arg()
+                  )
+                  enviar_telegram(aviso)
+                  print("Aviso enviado: todavia no hay sorteos publicados.")
+                  return
+              try:
+                  loteria = parse_loteria(fetch(URL_HOME))
+              except Exception as e:
+                  print("Aviso: no pude leer la loteria (%s)" % e)
+                  loteria = None
+              enviar_telegram(generar_resumen_dia(sorteos, loteria))
+              print("Resumen enviado con %d sorteo(s)." % len(sorteos))
+
+
+          def enviar_pendientes():
+              """Manda los sorteos de hoy que todavia no se enviaron (corrida de cierre)."""
+              hoy = fecha_arg()
+              try:
+                  sorteos = parse_tombola(fetch(URL_SORTEOS_HOY))
+              except Exception as e:
+                  print("No pude leer la pagina: %s" % e)
+                  return
+              if not sorteos:
+                  print("Todavia no hay sorteos publicados.")
+                  return
+              enviados = cargar_estado().get(hoy, [])
+              faltan = [s for s in sorteos if s["nombre"] not in enviados]
+              if not faltan:
+                  print("No falta ningun sorteo del %s. Listo." % hoy)
+                  return
+              print("Faltan %d: %s" % (len(faltan), ", ".join(s["nombre"] for s in faltan)))
+              for s in faltan:
+                  enviar_telegram(generar_post_sorteo(s))
+                  marcar_enviado(hoy, s["nombre"])
+                  print("Enviado: %s del %s" % (s["nombre"], s["fecha"]))
+
+
+          if __name__ == "__main__":
+              main()
+          PYEOF
+          python bot.py --auto
       - name: Guardar estado
         if: always()
         run: |
