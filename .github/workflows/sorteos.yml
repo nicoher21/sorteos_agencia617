@@ -2,29 +2,80 @@ name: Sorteos a Telegram
 
 on:
   schedule:
-    # 10:35 Arg - La Previa
-    - cron: '35 13 * * 1-6'
-    # 12:40 Arg - Matutina
-    - cron: '40 15 * * *'
-    # 15:35 Arg - Vespertina
-    - cron: '35 18 * * *'
-    # 17:05 Arg - barrido: manda lo que falte
-    - cron: '5 20 * * *'
-    # 18:50 Arg - barrido: manda lo que falte
-    - cron: '50 21 * * *'
-    # 20:05 Arg - Tardecita
-    - cron: '5 23 * * 1-6'
-    # 21:30 Arg - barrido: manda lo que falte
-    - cron: '30 0 * * *'
-    # 22:35 Arg - Nocturna (lunes a viernes)
-    - cron: '35 1 * * 2-6'
-    # 22:35 Arg - Nocturna (sabado)
-    - cron: '35 1 * * 0'
-    # 23:20 Arg - Nocturna, reintento
-    - cron: '20 2 * * *'
-    # 23:50 Arg - cierre del dia
-    - cron: '50 2 * * *'
+    # 10:20 La Previa (arranca antes del sorteo)
+    - cron: '20 13 * * 1-6'
+    # 10:40 La Previa
+    - cron: '40 13 * * 1-6'
+    # 11:00 La Previa
+    - cron: '0 14 * * 1-6'
+    # 11:20 La Previa
+    - cron: '20 14 * * 1-6'
+    # 11:40 cierre La Previa
+    - cron: '40 14 * * 1-6'
+    # 12:25 Matutina (arranca antes del sorteo)
+    - cron: '25 15 * * *'
+    # 12:45 Matutina
+    - cron: '45 15 * * *'
+    # 13:05 Matutina
+    - cron: '5 16 * * *'
+    # 13:25 Matutina
+    - cron: '25 16 * * *'
+    # 13:45 cierre Matutina
+    - cron: '45 16 * * *'
+    # 15:20 Vespertina (arranca antes del sorteo)
+    - cron: '20 18 * * *'
+    # 15:40 Vespertina
+    - cron: '40 18 * * *'
+    # 16:00 Vespertina
+    - cron: '0 19 * * *'
+    # 16:20 Vespertina
+    - cron: '20 19 * * *'
+    # 16:40 cierre Vespertina
+    - cron: '40 19 * * *'
+    # 17:20 barrido
+    - cron: '20 20 * * *'
+    # 18:30 barrido
+    - cron: '30 21 * * *'
+    # 19:50 Tardecita (arranca antes del sorteo)
+    - cron: '50 22 * * 1-6'
+    # 20:10 Tardecita
+    - cron: '10 23 * * 1-6'
+    # 20:30 Tardecita
+    - cron: '30 23 * * 1-6'
+    # 20:50 Tardecita
+    - cron: '50 23 * * 1-6'
+    # 21:10 cierre Tardecita (lun a vie)
+    - cron: '10 0 * * 2-6'
+    # 21:10 cierre Tardecita (sab)
+    - cron: '10 0 * * 0'
+    # 22:20 Nocturna (arranca antes del sorteo)
+    - cron: '20 1 * * 2-6'
+    # 22:20 Nocturna (sabado)
+    - cron: '20 1 * * 0'
+    # 22:40 Nocturna
+    - cron: '40 1 * * 2-6'
+    # 22:40 Nocturna (sabado)
+    - cron: '40 1 * * 0'
+    # 23:00 Nocturna
+    - cron: '0 2 * * 2-6'
+    # 23:00 Nocturna (sabado)
+    - cron: '0 2 * * 0'
+    # 23:20 Nocturna
+    - cron: '20 2 * * 2-6'
+    # 23:20 Nocturna (sabado)
+    - cron: '20 2 * * 0'
+    # 23:40 cierre Nocturna (lun a vie)
+    - cron: '40 2 * * 2-6'
+    # 23:40 cierre Nocturna (sabado)
+    - cron: '40 2 * * 0'
+    # 23:55 cierre del dia
+    - cron: '55 2 * * *'
   workflow_dispatch:
+
+# Evita que dos corridas se pisen entre si (GitHub a veces las encima).
+concurrency:
+  group: sorteos-telegram
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -32,6 +83,8 @@ permissions:
 jobs:
   enviar:
     runs-on: ubuntu-latest
+    # Tope de 20 min: si una corrida se traba, suelta el candado y libera a la siguiente.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -42,7 +95,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo '=== BOT V3 (autocontenido) ==='
+          echo '=== BOT V6 (autocontenido) ==='
           cat > bot.py <<'PYEOF'
           # -*- coding: utf-8 -*-
           """
@@ -134,7 +187,12 @@ jobs:
           TZ_ARG = datetime.timezone(datetime.timedelta(hours=-3))
 
           # Minutos que espera una corrida a que se publique el sorteo que espera.
-          ESPERA = 25
+          ESPERA = 15
+
+          # Cada cuantos segundos consulta la pagina mientras espera.
+          # Bajo de 60 a 20: asi el aviso sale apenas la pagina carga el resultado,
+          # y no hasta un minuto despues.
+          INTERVALO = 20
 
           # Hora aproximada de cada sorteo (minutos desde la medianoche, hora Argentina).
           # Solo se usa para avisar si un sorteo del dia no se llego a mandar.
@@ -466,23 +524,27 @@ jobs:
                       print("Corrida manual: mando el resumen de lo publicado hoy.")
                       return enviar_resumen()
 
-                  # GitHub a veces atrasa las corridas programadas (hasta horas) o directamente
-                  # las saltea. Por eso NUNCA confiamos en el reloj para decidir que mandar:
-                  # cada corrida manda TODO lo que falte del dia. El reloj solo dice cuantos
-                  # minutos vale la pena esperar a que se publique algo nuevo.
-                  if distancia > 60:
-                      minutos = 0  # corrida de barrido: manda lo que haya sin esperar
-                  else:
-                      minutos = ESPERA
+                  # GitHub atrasa las programadas hasta horas. Por eso la corrida ya no
+                  # "espera el sorteo que le tocaba": mira la pagina y manda al instante
+                  # TODO lo que haya sin enviar, sea cual sea el horario.
+                  #
+                  # Si no hay nada nuevo, se queda consultando cada INTERVALO segundos
+                  # dentro de una ventana de minutos. Asi, en cuanto la pagina carga el
+                  # resultado, sale el aviso (en lugar de esperar a la corrida siguiente).
                   if "--espera" in args:
                       minutos = int(args[args.index("--espera") + 1])
+                  elif distancia > 60:
+                      minutos = 0  # barrido: manda lo que haya, sin quedarse esperando
+                  else:
+                      minutos = ESPERA
 
                   # Domingo y el sorteo no se juega: no tiene sentido esperarlo.
                   if ahora.weekday() == 6 and nombre in NO_HAY_DOMINGO:
                       print("Domingo: '%s' no se juega. No espero." % nombre)
                       minutos = 0
 
-                  print("Espera de hasta %d min antes de mandar." % minutos)
+                  print("Ventana de espera: hasta %d min (consulta cada %ds)."
+                        % (minutos, INTERVALO))
                   sorteos = esperar_y_enviar(nombre, minutos)
                   avisar_faltantes(sorteos)
                   return
@@ -586,9 +648,9 @@ jobs:
                       print("Se acabo la espera de %d minutos." % minutos)
                       break
                   print(
-                      "Intento %d: esperando que se publique '%s' (60s)..." % (intento, nombre)
+                      "Intento %d: consultando la pagina (cada %ds)..." % (intento, INTERVALO)
                   )
-                  time.sleep(60)
+                  time.sleep(INTERVALO)
               return enviar_pendientes()
 
 
