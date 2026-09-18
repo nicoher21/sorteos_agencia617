@@ -2,74 +2,27 @@ name: Sorteos a Telegram
 
 on:
   schedule:
-    # 10:20 La Previa (arranca antes del sorteo)
-    - cron: '20 13 * * 1-6'
-    # 10:40 La Previa
-    - cron: '40 13 * * 1-6'
-    # 11:00 La Previa
-    - cron: '0 14 * * 1-6'
-    # 11:20 La Previa
-    - cron: '20 14 * * 1-6'
-    # 11:40 cierre La Previa
-    - cron: '40 14 * * 1-6'
-    # 12:25 Matutina (arranca antes del sorteo)
-    - cron: '25 15 * * *'
-    # 12:45 Matutina
-    - cron: '45 15 * * *'
-    # 13:05 Matutina
-    - cron: '5 16 * * *'
-    # 13:25 Matutina
-    - cron: '25 16 * * *'
-    # 13:45 cierre Matutina
-    - cron: '45 16 * * *'
-    # 15:20 Vespertina (arranca antes del sorteo)
-    - cron: '20 18 * * *'
-    # 15:40 Vespertina
-    - cron: '40 18 * * *'
-    # 16:00 Vespertina
-    - cron: '0 19 * * *'
-    # 16:20 Vespertina
-    - cron: '20 19 * * *'
-    # 16:40 cierre Vespertina
-    - cron: '40 19 * * *'
-    # 17:20 barrido
+    # 10:20-13:50 La Previa + Matutina (cada 10 min)
+    - cron: '25,35,45,55 13 * * 1-6'
+    - cron: '5,15,25,35,45,55 14 * * 1-6'
+    - cron: '5,15,25,35,45,55 15 * * 1-6'
+    - cron: '5,15,25,35,45,55 16 * * 1-6'
+    # 15:20-16:45 Vespertina (cada 10 min)
+    - cron: '25,35,45,55 18 * * *'
+    - cron: '5,15,25,35,45 19 * * *'
+    # 19:50-21:30 Tardecita (cada 10 min)
+    - cron: '55 22 * * 1-6'
+    - cron: '5,15,25,35,45,55 23 * * 1-6'
+    - cron: '5,15,25 0 * * 2-6'
+    - cron: '5,15,25 0 * * 0'
+    # 22:20-23:55 Nocturna (cada 10 min)
+    - cron: '25,35,45,55 1 * * 2-6'
+    - cron: '25,35,45,55 1 * * 0'
+    - cron: '5,15,25,35,45,55 2 * * 2-6'
+    - cron: '5,15,25,35,45,55 2 * * 0'
+    # 17:20 y 18:30 barridos de la tarde
     - cron: '20 20 * * *'
-    # 18:30 barrido
     - cron: '30 21 * * *'
-    # 19:50 Tardecita (arranca antes del sorteo)
-    - cron: '50 22 * * 1-6'
-    # 20:10 Tardecita
-    - cron: '10 23 * * 1-6'
-    # 20:30 Tardecita
-    - cron: '30 23 * * 1-6'
-    # 20:50 Tardecita
-    - cron: '50 23 * * 1-6'
-    # 21:10 cierre Tardecita (lun a vie)
-    - cron: '10 0 * * 2-6'
-    # 21:10 cierre Tardecita (sab)
-    - cron: '10 0 * * 0'
-    # 22:20 Nocturna (arranca antes del sorteo)
-    - cron: '20 1 * * 2-6'
-    # 22:20 Nocturna (sabado)
-    - cron: '20 1 * * 0'
-    # 22:40 Nocturna
-    - cron: '40 1 * * 2-6'
-    # 22:40 Nocturna (sabado)
-    - cron: '40 1 * * 0'
-    # 23:00 Nocturna
-    - cron: '0 2 * * 2-6'
-    # 23:00 Nocturna (sabado)
-    - cron: '0 2 * * 0'
-    # 23:20 Nocturna
-    - cron: '20 2 * * 2-6'
-    # 23:20 Nocturna (sabado)
-    - cron: '20 2 * * 0'
-    # 23:40 cierre Nocturna (lun a vie)
-    - cron: '40 2 * * 2-6'
-    # 23:40 cierre Nocturna (sabado)
-    - cron: '40 2 * * 0'
-    # 23:55 cierre del dia
-    - cron: '55 2 * * *'
   workflow_dispatch:
 
 # Evita que dos corridas se pisen entre si (GitHub a veces las encima).
@@ -83,8 +36,9 @@ permissions:
 jobs:
   enviar:
     runs-on: ubuntu-latest
-    # Tope de 20 min: si una corrida se traba, suelta el candado y libera a la siguiente.
-    timeout-minutes: 20
+    # Tope de 12 min: la espera maxima es 9 min, asi que sobra. Ademas, como hay una
+    # corrida cada 10 minutos, este tope evita que una trabada bloquee a las siguientes.
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -95,7 +49,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo '=== BOT V6 (autocontenido) ==='
+          echo '=== BOT V7 (autocontenido) ==='
           cat > bot.py <<'PYEOF'
           # -*- coding: utf-8 -*-
           """
@@ -187,11 +141,12 @@ jobs:
           TZ_ARG = datetime.timezone(datetime.timedelta(hours=-3))
 
           # Minutos que espera una corrida a que se publique el sorteo que espera.
-          ESPERA = 15
+          # Como ahora hay una corrida cada 10 minutos, alcanza con esperar 9: asi nunca
+          # se pisa con la siguiente y el aviso sale igual apenas aparece el resultado.
+          ESPERA = 9
 
           # Cada cuantos segundos consulta la pagina mientras espera.
-          # Bajo de 60 a 20: asi el aviso sale apenas la pagina carga el resultado,
-          # y no hasta un minuto despues.
+          # 20 segundos: el aviso sale casi al instante en que la pagina carga el resultado.
           INTERVALO = 20
 
           # Hora aproximada de cada sorteo (minutos desde la medianoche, hora Argentina).
